@@ -123,7 +123,7 @@ func (d Dir) ReadDir(intr fs.Intr) ([]fuse.Dirent, fuse.Error) {
 	return de, nil
 }
 
-func (d Dir) fleshOut() {
+func (d *Dir) fleshOut() {
 	if len(d.children) != len(d.rd) {
 		d.children = rawDToDFNodes(d.rd)
 	}
