@@ -2,22 +2,58 @@
 package main
 
 import (
+	"bazil.org/fuse"
+	"bazil.org/fuse/fs"
+	_ "bazil.org/fuse/fs/fstestutil"
+	"bytes"
+	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"labix.org/v2/mgo/bson"
 	"log"
 	"os"
-
-	"bazil.org/fuse"
-	"bazil.org/fuse/fs"
-	_ "bazil.org/fuse/fs/fstestutil"
 )
 
 var Usage = func() {
 	fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
 	fmt.Fprintf(os.Stderr, "  %s <mountpoint> <bsonfile>\n", os.Args[0])
 	flag.PrintDefaults()
+}
+
+// Step through all docs and return rawD
+func mongoDumpToRawD(dump []byte) (rawD bson.RawD, err error) {
+	buf := bytes.NewReader(dump)
+
+	var i = 0
+	var nextLoc int64 = 0
+	rawD = bson.RawD{}
+	for nextLoc < int64(len(dump)) {
+		var docLen int32 = 0
+
+		err := binary.Read(buf, binary.LittleEndian, &docLen)
+		if err != nil {
+			return nil, errors.New("Read error for docLen")
+		}
+		// Process doc
+		var raw bson.Raw
+		var rawDoc bson.RawDocElem
+		raw.Kind = 0x03
+		raw.Data = dump[nextLoc : nextLoc+int64(docLen)]
+		rawDoc.Name = fmt.Sprintf("Doc %v", i)
+		rawDoc.Value = raw
+		rawD = append(rawD, rawDoc)
+
+		// Should use size of docLen and not 4!
+		nextLoc = int64(docLen - 4)
+		nextLoc, err = buf.Seek(nextLoc, 1)
+		if err != nil {
+			return nil, errors.New("Fell off end of file")
+		}
+		i++
+	}
+	return rawD, nil
 }
 
 // Dir implements both Node and Handle for the root directory.
@@ -63,11 +99,15 @@ func main() {
 		log.Panic(err)
 	}
 
-	bsonRaw := bson.Raw{3, bsonData}
+	//bsonRaw := bson.Raw{3, bsonData}
 
 	var bsonRawD bson.RawD
 
-	err = bsonRaw.Unmarshal(&bsonRawD)
+	bsonRawD, err = mongoDumpToRawD(bsonData)
+	if err != nil {
+		log.Panic(err)
+	}
+
 	if err != nil {
 		log.Panic(err)
 	}
@@ -143,7 +183,7 @@ func rawDToDFNodes(rd bson.RawD) []DFNode {
 			d.name = v.Name
 			d.dirent = fuse.Dirent{Inode: inode, Name: v.Name, Type: fuse.DT_Dir}
 			nodes[i] = d
-			inode = inode + 1
+			inode++
 		} else {
 			var f File
 			f.data = v.Value.Data
@@ -151,7 +191,7 @@ func rawDToDFNodes(rd bson.RawD) []DFNode {
 			f.attr = fuse.Attr{Inode: inode, Mode: 0444, Size: uint64(len(f.data))}
 			f.dirent = fuse.Dirent{Inode: inode, Name: v.Name, Type: fuse.DT_File}
 			nodes[i] = f
-			inode = inode + 1
+			inode++
 		}
 	}
 	return nodes
