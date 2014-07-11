@@ -1,4 +1,3 @@
-// Hellofs implements a simple "hello world" file system.
 package main
 
 import (
@@ -22,6 +21,29 @@ var Usage = func() {
 	flag.PrintDefaults()
 }
 
+var bsonTypeMap = map[byte]string{
+	0x01: "float",
+	0x02: "utf8",
+	0x03: "bson",
+	0x04: "array",
+	0x05: "binary",
+	0x06: "deprecated",
+	0x07: "oid",
+	0x08: "bool",
+	0x09: "datetime",
+	0x0A: "null",
+	0x0B: "regex",
+	0x0C: "dbpointer",
+	0x0D: "js",
+	0x0E: "deprecated",
+	0x0F: "js",
+	0x10: "int32",
+	0x11: "timestamp",
+	0x12: "int64",
+	0xFF: "minkey",
+	0x7F: "maxkey",
+}
+
 // Step through all docs and return rawD
 func mongoDumpToRawD(dump []byte) (rawD bson.RawD, err error) {
 	buf := bytes.NewReader(dump)
@@ -41,7 +63,7 @@ func mongoDumpToRawD(dump []byte) (rawD bson.RawD, err error) {
 		var rawDoc bson.RawDocElem
 		raw.Kind = 0x03
 		raw.Data = dump[nextLoc : nextLoc+int64(docLen)]
-		rawDoc.Name = fmt.Sprintf("Doc %v", i)
+		rawDoc.Name = fmt.Sprintf("%v", i)
 		rawDoc.Value = raw
 		rawD = append(rawD, rawDoc)
 
@@ -56,17 +78,15 @@ func mongoDumpToRawD(dump []byte) (rawD bson.RawD, err error) {
 	return rawD, nil
 }
 
-// Dir implements both Node and Handle for the root directory.
 type Dir struct {
 	children []DFNode
-	//	bson     bson.Raw
-	rd     bson.RawD
-	attr   fuse.Attr
-	dirent fuse.Dirent
-	name   string
+	rd       bson.RawD
+	r        bson.Raw
+	attr     fuse.Attr
+	dirent   fuse.Dirent
+	name     string
 }
 
-// File implements both Node and Handle for the hello file.
 type File struct {
 	data   []byte
 	attr   fuse.Attr
@@ -77,6 +97,7 @@ type File struct {
 type DFNode interface {
 	Dirent() fuse.Dirent
 	Attr() fuse.Attr
+	Name() string
 }
 
 var rootDir Dir
@@ -99,15 +120,9 @@ func main() {
 		log.Panic(err)
 	}
 
-	//bsonRaw := bson.Raw{3, bsonData}
-
 	var bsonRawD bson.RawD
 
 	bsonRawD, err = mongoDumpToRawD(bsonData)
-	if err != nil {
-		log.Panic(err)
-	}
-
 	if err != nil {
 		log.Panic(err)
 	}
@@ -133,7 +148,6 @@ func main() {
 	}
 }
 
-// FS implements the hello world file system.
 type FS struct{}
 
 func (FS) Root() (fs.Node, fuse.Error) {
@@ -144,11 +158,15 @@ func (d Dir) Attr() fuse.Attr {
 	return d.attr
 }
 
+func (d Dir) Name() string {
+	return d.name
+}
+
 func (d Dir) Lookup(name string, intr fs.Intr) (fs.Node, fuse.Error) {
 	d.fleshOut()
-	for i := range d.rd {
-		if name == d.rd[i].Name {
-			return d.children[i], nil
+	for _, v := range d.children {
+		if name == v.Name() {
+			return v, nil
 		}
 	}
 	return nil, fuse.ENOENT
@@ -164,6 +182,9 @@ func (d Dir) ReadDir(intr fs.Intr) ([]fuse.Dirent, fuse.Error) {
 }
 
 func (d *Dir) fleshOut() {
+	if d.rd == nil {
+		d.r.Unmarshal(&d.rd)
+	}
 	if len(d.children) != len(d.rd) {
 		d.children = rawDToDFNodes(d.rd)
 	}
@@ -176,20 +197,22 @@ func (d Dir) Dirent() fuse.Dirent {
 func rawDToDFNodes(rd bson.RawD) []DFNode {
 	nodes := make([]DFNode, len(rd), len(rd))
 	for i, v := range rd {
-		if v.Value.Kind == 3 {
+		if v.Value.Kind == 3 || v.Value.Kind == 4 {
 			var d Dir
-			v.Value.Unmarshal(&d.rd)
-			d.attr = fuse.Attr{Inode: inode, Mode: os.ModeDir | 0555}
+			d.r = v.Value
 			d.name = v.Name
-			d.dirent = fuse.Dirent{Inode: inode, Name: v.Name, Type: fuse.DT_Dir}
+			d.attr = fuse.Attr{Inode: inode, Mode: os.ModeDir | 0555}
+			d.dirent = fuse.Dirent{Inode: inode, Name: d.name, Type: fuse.DT_Dir}
 			nodes[i] = d
 			inode++
 		} else {
 			var f File
-			f.data = v.Value.Data
-			f.name = v.Name
+			var d interface{}
+			v.Value.Unmarshal(&d)
+			f.data = []byte(fmt.Sprintf("%v\n", d))
+			f.name = fmt.Sprintf("%v.%v", v.Name, bsonTypeMap[v.Value.Kind])
 			f.attr = fuse.Attr{Inode: inode, Mode: 0444, Size: uint64(len(f.data))}
-			f.dirent = fuse.Dirent{Inode: inode, Name: v.Name, Type: fuse.DT_File}
+			f.dirent = fuse.Dirent{Inode: inode, Name: f.name, Type: fuse.DT_File}
 			nodes[i] = f
 			inode++
 		}
@@ -207,4 +230,8 @@ func (f File) ReadAll(intr fs.Intr) ([]byte, fuse.Error) {
 
 func (f File) Dirent() fuse.Dirent {
 	return f.dirent
+}
+
+func (f File) Name() string {
+	return f.name
 }
